@@ -16,6 +16,7 @@ from pulpcore.client.pulp_ansible import (
     ContentCollectionVersionsApi,
     ContentNamespacesApi,
     DistributionsAnsibleApi,
+    PulpAnsibleApiV3CollectionsApi,
     PulpAnsibleApiV3CollectionsVersionsApi,
     RepositoriesAnsibleApi,
     RepositoriesAnsibleVersionsApi,
@@ -135,6 +136,12 @@ def galaxy_v3_content_collection_index_api(ansible_bindings_client):
 def galaxy_v3_plugin_namespaces_api_client(ansible_bindings_client):
     """Provides the Galaxy V3 Namespace API client object."""
     return PulpAnsibleApiV3PluginAnsibleContentNamespacesApi(ansible_bindings_client)
+
+
+@pytest.fixture
+def galaxy_v3_collection_api_client(ansible_bindings_client):
+    """Provides the *deprecated* Galaxy V3 Collection API client object."""
+    return PulpAnsibleApiV3CollectionsApi(ansible_bindings_client)
 
 
 @pytest.fixture

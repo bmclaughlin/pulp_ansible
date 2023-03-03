@@ -6,52 +6,29 @@ import subprocess
 import tempfile
 import os
 
-from pulpcore.client.pulp_ansible import (
-    DistributionsAnsibleApi,
-    PulpAnsibleApiV3CollectionsApi,
-    PulpAnsibleApiV3CollectionsVersionsApi,
-    RemotesCollectionApi,
-    RepositoriesAnsibleApi,
-    RepositoriesAnsibleVersionsApi,
-)
-from pulp_smash.pulp3.bindings import delete_orphans, monitor_task, PulpTestCase
-from pulp_smash.pulp3.utils import gen_distribution, gen_repo
+from pulp_smash.pulp3.bindings import delete_orphans
+from pulp_smash.pulp3.utils import gen_repo
 from pulp_smash.utils import http_get, uuid4
 
-from pulp_ansible.tests.functional.utils import gen_ansible_client, wait_tasks
-from pulp_ansible.tests.functional.utils import set_up_module as setUpModule  # noqa:F401
+from pulp_ansible.tests.functional.utils import wait_tasks
 
 
-class InstallCollectionTestCase(PulpTestCase):
-    """Test whether ansible-galaxy can upload a Collection to Pulp."""
-
-    @classmethod
-    def setUpClass(cls):
-        """Create class-wide variables."""
-        delete_orphans()
-        cls.client = gen_ansible_client()
-        cls.repo_api = RepositoriesAnsibleApi(cls.client)
-        cls.repo_versions_api = RepositoriesAnsibleVersionsApi(cls.client)
-        cls.remote_collection_api = RemotesCollectionApi(cls.client)
-        cls.distributions_api = DistributionsAnsibleApi(cls.client)
-        cls.collections_v3api = PulpAnsibleApiV3CollectionsApi(cls.client)
-        cls.collections_versions_v3api = PulpAnsibleApiV3CollectionsVersionsApi(cls.client)
-
-    def test_upload_collection(self):
-        """Test whether ansible-galaxy can upload a Collection to Pulp."""
-        repo = self.repo_api.create(gen_repo())
-        self.addCleanup(self.repo_api.delete, repo.pulp_href)
+def test_upload_collection(
+    ansible_repo_api_client,
+    ansible_repo_version_api_client,
+    ansible_distribution_factory,
+    create_ansible_cfg,
+    gen_object_with_cleanup,
+    pulp_admin_user,
+):
+    with pulp_admin_user:
+        repo = gen_object_with_cleanup(ansible_repo_api_client, gen_repo())
 
         # Create a distribution.
-        body = gen_distribution()
-        body["repository"] = repo.pulp_href
-        distribution_create = self.distributions_api.create(body)
-        created_resources = monitor_task(distribution_create.task).created_resources
-        distribution = self.distributions_api.read(created_resources[0])
-
-        self.addCleanup(self.distributions_api.delete, distribution.pulp_href)
+        distribution = ansible_distribution_factory(repo)
 
         with tempfile.TemporaryDirectory() as temp_dir:
+            create_ansible_cfg(temp_dir, distribution.client_url, pulp_admin_user)
             collection_name = "".join([random.choice(string.ascii_lowercase) for i in range(26)])
             cmd = "ansible-galaxy collection init --init-path {} pulp.{}".format(
                 temp_dir, collection_name
@@ -68,60 +45,70 @@ class InstallCollectionTestCase(PulpTestCase):
             )
             subprocess.run(cmd.split())
 
-            repo_version = self.repo_versions_api.read(repo.latest_version_href)
-            self.assertEqual(repo_version.number, 0)  # We uploaded 1 collection
+            repo_version = ansible_repo_version_api_client.read(repo.latest_version_href)
+            print('--------------------')
+            print(f'repo: {repo.latest_version_href}')
+            assert(repo_version.number == 0)  # We uploaded 1 collection
 
-            cmd = "ansible-galaxy collection publish -c -s {} {}{}".format(
-                distribution.client_url, temp_dir, "/pulp-" + collection_name + "-1.0.0.tar.gz"
+            cmd = "ansible-galaxy collection publish -c {}{}".format(
+                temp_dir, "/pulp-" + collection_name + "-1.0.0.tar.gz"
             )
-            subprocess.run(cmd.split())
+            subprocess.run(cmd.split(), cwd=temp_dir)
             wait_tasks()
 
-        repo = self.repo_api.read(repo.pulp_href)
-        repo_version = self.repo_versions_api.read(repo.latest_version_href)
-        self.assertEqual(repo_version.number, 1)  # We uploaded 1 collection
+            repo = ansible_repo_api_client.read(repo.pulp_href)
+            repo_version = ansible_repo_version_api_client.read(repo.latest_version_href)
+            print('bbbbbbbbbbbbbbbbbbbbbbb')
+            print(f'repo: {repo.latest_version_href}')
+            assert(repo_version.number == 1)  # We uploaded 1 collection
 
-    def test_upload_collection_with_requires_ansible(self):
-        """Test whether ansible-galaxy can upload a Collection to Pulp."""
-        delete_orphans()
-        repo = self.repo_api.create(gen_repo())
-        self.addCleanup(self.repo_api.delete, repo.pulp_href)
+
+def test_upload_collection_with_requires_ansible(
+    ansible_repo_api_client,
+    ansible_repo_version_api_client,
+    ansible_distribution_factory,
+    create_ansible_cfg,
+    galaxy_v3_collection_api_client,
+    galaxy_v3_collection_versions_api_client,
+    gen_object_with_cleanup,
+    pulp_admin_user,
+):
+    """Test whether ansible-galaxy can upload a Collection to Pulp."""
+    delete_orphans()
+    with pulp_admin_user:
+        repo = gen_object_with_cleanup(ansible_repo_api_client, gen_repo())
 
         # Create a distribution.
-        body = gen_distribution()
-        body["repository"] = repo.pulp_href
-        distribution_create = self.distributions_api.create(body)
-        created_resources = monitor_task(distribution_create.task).created_resources
-        distribution = self.distributions_api.read(created_resources[0])
+        distribution = ansible_distribution_factory(repo)
 
-        self.addCleanup(self.distributions_api.delete, distribution.pulp_href)
-
-        collections = self.collections_v3api.list(distribution.base_path)
-        self.assertEqual(collections.meta.count, 0)
+        collections = galaxy_v3_collection_api_client.list(distribution.base_path)
+        assert(collections.meta.count == 0)
 
         temp_path = f"/tmp/{uuid4()}"
         subprocess.run(f"mkdir -p {temp_path}".split())
+        create_ansible_cfg(temp_path, distribution.client_url, pulp_admin_user)
 
         content = http_get("https://galaxy.ansible.com/download/pulp-squeezer-0.0.9.tar.gz")
         collection_path = f"{temp_path}/pulp-squeezer-0.0.9.tar.gz"
         with open(collection_path, "wb") as f:
             f.write(content)
 
-        cmd = "ansible-galaxy collection publish -c -s {} {}".format(
-            distribution.client_url, collection_path
-        )
+        cmd = "ansible-galaxy collection publish -c {}".format(collection_path)
         subprocess.run(cmd.split())
         wait_tasks()
 
-        collections = self.collections_v3api.list(distribution.base_path)
-        self.assertEqual(collections.meta.count, 1)
+        collections = galaxy_v3_collection_api_client.list(distribution.base_path)
+        print('000000000000000000')
+        print(f'collections: {collections}')
+        print('000000000000000000')
+        assert(collections.meta.count == 1)
 
-        repo = self.repo_api.read(repo.pulp_href)
-        repo_version = self.repo_versions_api.read(repo.latest_version_href)
-        self.assertEqual(repo_version.number, 1)  # We uploaded 1 collection
+        repo = ansible_repo_api_client.read(repo.pulp_href)
+        repo_version = ansible_repo_version_api_client.read(repo.latest_version_href)
+        assert(repo_version.number == 1)  # We uploaded 1 collection
 
-        version = self.collections_versions_v3api.read(
+        version = galaxy_v3_collection_versions_api_client.read(
             "squeezer", "pulp", distribution.base_path, "0.0.9"
         )
 
-        self.assertEqual(version.requires_ansible, ">=2.8")
+        assert(version.requires_ansible == ">=2.8")
